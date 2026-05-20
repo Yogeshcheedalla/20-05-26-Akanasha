@@ -1,13 +1,13 @@
 import os
 import json
 from pathlib import Path
-from graphify.detect import detect
-from graphify.extract import collect_files, extract
-from graphify.build import build_from_json
-from graphify.cluster import cluster, score_all
-from graphify.analyze import god_nodes, surprising_connections, suggest_questions
-from graphify.report import generate
-from graphify.export import to_json, to_html
+from graphify.detect import detect  # pyrefly: ignore [missing-import]
+from graphify.extract import collect_files, extract  # pyrefly: ignore [missing-import]
+from graphify.build import build_from_json  # pyrefly: ignore [missing-import]
+from graphify.cluster import cluster, score_all  # pyrefly: ignore [missing-import]
+from graphify.analyze import god_nodes, surprising_connections, suggest_questions  # pyrefly: ignore [missing-import]
+from graphify.report import generate  # pyrefly: ignore [missing-import]
+from graphify.export import to_json, to_html  # pyrefly: ignore [missing-import]
 
 # 1. Detect files
 print("Detecting files...")
@@ -72,42 +72,46 @@ to_html(G, communities, html_path, community_labels=labels)
 print("Applying premium aesthetics and interactive logic...")
 premium_css = """
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap');
   :root {
-    --bg: #030712;
-    --sidebar-bg: rgba(17, 24, 39, 0.75);
-    --border: rgba(255, 255, 255, 0.08);
+    --bg: #0b0f19;
+    --sidebar-bg: rgba(13, 20, 35, 0.7);
+    --border: rgba(255, 255, 255, 0.06);
+    --border-glow: rgba(99, 102, 241, 0.2);
     --accent: #6366f1;
-    --accent-glow: rgba(99, 102, 241, 0.4);
-    --text: #f3f4f6;
+    --accent-glow: rgba(99, 102, 241, 0.35);
+    --text: #f9fafb;
     --text-muted: #9ca3af;
-    --card-bg: rgba(31, 41, 55, 0.3);
-    --panel-blur: blur(20px);
+    --card-bg: rgba(17, 24, 39, 0.4);
+    --panel-blur: blur(24px);
+    --transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { 
     background: var(--bg); 
     color: var(--text); 
-    font-family: 'Inter', -apple-system, sans-serif; 
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif; 
     display: flex; 
     height: 100vh; 
     overflow: hidden; 
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
   }
   #graph { 
     flex: 1; 
-    background: radial-gradient(circle at 50% 50%, #111827 0%, #030712 100%); 
+    background: radial-gradient(circle at 50% 50%, #151d30 0%, #080c14 100%); 
     position: relative;
   }
   #graph::before {
     content: '';
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
-    background-image: radial-gradient(rgba(255,255,255,0.03) 1px, transparent 1px);
-    background-size: 40px 40px;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 32px 32px;
     pointer-events: none;
   }
   #sidebar { 
-    width: 340px; 
+    width: 350px; 
     background: var(--sidebar-bg); 
     backdrop-filter: var(--panel-blur); 
     -webkit-backdrop-filter: var(--panel-blur);
@@ -115,32 +119,38 @@ premium_css = """
     display: flex; 
     flex-direction: column; 
     overflow: hidden; 
-    box-shadow: -10px 0 40px rgba(0,0,0,0.6);
+    box-shadow: -10px 0 50px rgba(0,0,0,0.8);
     z-index: 10;
+    transition: var(--transition);
   }
-  #search-wrap { padding: 24px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.2); }
+  #search-wrap { 
+    padding: 24px; 
+    border-bottom: 1px solid var(--border); 
+    background: rgba(0, 0, 0, 0.15); 
+  }
   #search { 
     width: 100%; 
-    background: rgba(0,0,0,0.5); 
+    background: rgba(0, 0, 0, 0.4); 
     border: 1px solid var(--border); 
     color: var(--text); 
     padding: 14px 18px; 
     border-radius: 12px; 
     font-size: 14px; 
     font-weight: 500;
+    font-family: inherit;
     outline: none; 
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+    transition: var(--transition);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
   }
   #search:focus { 
     border-color: var(--accent); 
-    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15), inset 0 2px 4px rgba(0,0,0,0.3);
-    background: rgba(0,0,0,0.7);
+    box-shadow: 0 0 20px var(--border-glow), inset 0 2px 8px rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.6);
   }
   #search-results { 
     max-height: 220px; 
     overflow-y: auto; 
-    background: rgba(0,0,0,0.3);
+    background: rgba(0, 0, 0, 0.2);
     border-bottom: 1px solid var(--border);
   }
   .search-item { 
@@ -148,16 +158,20 @@ premium_css = """
     cursor: pointer; 
     font-size: 13px; 
     color: var(--text-muted);
-    transition: all 0.2s;
-    border-left: 2px solid transparent;
+    transition: var(--transition);
+    border-left: 3px solid transparent;
   }
   .search-item:hover { 
-    background: rgba(255,255,255,0.05); 
+    background: rgba(99, 102, 241, 0.08); 
     color: var(--text);
     border-left-color: var(--accent);
     padding-left: 28px;
   }
-  #info-panel { padding: 28px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  #info-panel { 
+    padding: 28px 24px; 
+    border-bottom: 1px solid var(--border); 
+    flex-shrink: 0; 
+  }
   #info-panel h3 { 
     font-size: 11px; 
     color: var(--accent); 
@@ -168,10 +182,22 @@ premium_css = """
     display: flex;
     align-items: center;
     gap: 8px;
+    text-shadow: 0 0 12px var(--accent-glow);
   }
-  #info-panel h3::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-  #info-content { font-size: 14px; color: #e5e7eb; line-height: 1.6; }
-  #info-content .field { margin-bottom: 16px; }
+  #info-panel h3::after { 
+    content: ''; 
+    flex: 1; 
+    height: 1px; 
+    background: linear-gradient(90deg, var(--border) 0%, transparent 100%); 
+  }
+  #info-content { 
+    font-size: 14px; 
+    color: #f3f4f6; 
+    line-height: 1.6; 
+  }
+  #info-content .field { 
+    margin-bottom: 16px; 
+  }
   #info-content .field b { 
     color: var(--text-muted); 
     font-size: 10px; 
@@ -182,33 +208,50 @@ premium_css = """
     font-weight: 700;
   }
   #info-content .val {
-    background: rgba(255,255,255,0.03);
-    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.25);
+    padding: 10px 14px;
     border-radius: 8px;
     border: 1px solid var(--border);
     word-break: break-all;
+    font-family: 'Fira Code', monospace;
+    font-size: 12px;
+    color: #e5e7eb;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.4);
   }
-  #info-content .empty { color: var(--text-muted); font-style: italic; text-align: center; padding: 40px 0; opacity: 0.4; font-size: 13px; }
+  #info-content .empty { 
+    color: var(--text-muted); 
+    font-style: italic; 
+    text-align: center; 
+    padding: 40px 0; 
+    opacity: 0.5; 
+    font-size: 13px; 
+  }
   .neighbor-link { 
     display: flex;
     align-items: center;
-    padding: 10px 14px; 
+    padding: 12px 16px; 
     margin: 8px 0; 
     border-radius: 10px; 
     cursor: pointer; 
-    font-size: 12px; 
-    background: rgba(255,255,255,0.02);
+    font-size: 13px; 
+    background: rgba(255, 255, 255, 0.015);
     border: 1px solid var(--border);
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    border-left: 3px solid rgba(255, 255, 255, 0.25);
+    transition: var(--transition);
     color: var(--text);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.15);
   }
   .neighbor-link:hover { 
     background: rgba(99, 102, 241, 0.08); 
     border-color: var(--accent);
-    transform: translateX(4px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    transform: translateX(6px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   }
-  #legend-wrap { flex: 1; overflow-y: auto; padding: 24px; }
+  #legend-wrap { 
+    flex: 1; 
+    overflow-y: auto; 
+    padding: 24px; 
+  }
   #legend-wrap h3 { 
     font-size: 11px; 
     color: var(--accent); 
@@ -219,8 +262,14 @@ premium_css = """
     display: flex;
     align-items: center;
     gap: 8px;
+    text-shadow: 0 0 12px var(--accent-glow);
   }
-  #legend-wrap h3::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  #legend-wrap h3::after { 
+    content: ''; 
+    flex: 1; 
+    height: 1px; 
+    background: linear-gradient(90deg, var(--border) 0%, transparent 100%); 
+  }
   .legend-item { 
     display: flex; 
     align-items: center; 
@@ -229,24 +278,37 @@ premium_css = """
     cursor: pointer; 
     border-radius: 12px; 
     font-size: 13px; 
-    transition: all 0.2s;
+    transition: var(--transition);
     margin-bottom: 6px;
     border: 1px solid transparent;
   }
   .legend-item:hover { 
-    background: rgba(255,255,255,0.04); 
+    background: rgba(255, 255, 255, 0.03); 
     border-color: var(--border);
+    transform: translateX(4px);
   }
-  .legend-item.dimmed { opacity: 0.15; filter: grayscale(1); transform: scale(0.97); }
+  .legend-item.dimmed { 
+    opacity: 0.15; 
+    filter: grayscale(1); 
+    transform: scale(0.97); 
+  }
   .legend-dot { 
-    width: 10px; height: 10px; 
-    border-radius: 3px; 
+    width: 12px; 
+    height: 12px; 
+    border-radius: 4px; 
     box-shadow: 0 0 10px currentColor; 
     flex-shrink: 0; 
   }
-  .legend-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: #d1d5db; }
+  .legend-label { 
+    flex: 1; 
+    white-space: nowrap; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+    font-weight: 600; 
+    color: #e5e7eb; 
+  }
   .legend-count { 
-    font-family: monospace;
+    font-family: 'Fira Code', monospace;
     background: rgba(0,0,0,0.3);
     padding: 3px 10px;
     border-radius: 6px;
@@ -256,7 +318,7 @@ premium_css = """
   }
   #stats { 
     padding: 20px 24px; 
-    background: rgba(0,0,0,0.4); 
+    background: rgba(0, 0, 0, 0.35); 
     border-top: 1px solid var(--border); 
     font-size: 10px; 
     color: var(--text-muted); 
@@ -264,9 +326,9 @@ premium_css = """
     letter-spacing: 0.1em;
     font-weight: 600;
   }
-  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 10px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 </style>
 """
@@ -373,11 +435,10 @@ if '</body>' in html_content:
 # 3. Minor HTML fixes for the premium layout (adding wrappers if needed, though existing structure is okay)
 # We'll just update the stats to look more 'cyber'
 html_content = html_content.replace('Node Info', 'Architecture Intel')
-html_content = html_content.replace('Communities', 'System Sectors')
+html_content = html_content.replace('>Communities<', '>System Sectors<')
 
 Path(html_path).write_text(html_content, encoding="utf-8")
 
 print("\nSuccess! Knowledge graph interface modernized in graphify-out/")
 print("  - Aesthetic: Cyber-Minimalist")
 print("  - Engine: Premium Vis-Network Overrides")
-
