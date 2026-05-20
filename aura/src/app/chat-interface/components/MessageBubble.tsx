@@ -46,7 +46,8 @@ function renderLink(label: React.ReactNode, url: string, key: string) {
 
 function renderInlineText(text: string, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const pattern = /(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|https?:\/\/[^\s<]+)/g;
+  const urlPattern = '(?:https?:\\/\\/[^)\\s]+|\\/generated\\/[^)\\s]+)';
+  const pattern = new RegExp(`(\\[([^\\]]+)\\]\\((${urlPattern})\\)|${urlPattern})`, 'g');
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -96,6 +97,90 @@ function renderInlineSegment(segment: string, keyPrefix: string): React.ReactNod
   return nodes;
 }
 
+function isMarkdownTableStart(lines: string[], index: number): boolean {
+  const current = lines[index]?.trim() || '';
+  const next = lines[index + 1]?.trim() || '';
+  return (
+    current.startsWith('|') &&
+    current.endsWith('|') &&
+    next.startsWith('|') &&
+    next.endsWith('|') &&
+    next
+      .slice(1, -1)
+      .split('|')
+      .every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
+  );
+}
+
+function parseMarkdownTableLine(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+function renderMarkdownTable(tableLines: string[], key: string) {
+  const header = parseMarkdownTableLine(tableLines[0]);
+  const body = tableLines.slice(2).map(parseMarkdownTableLine);
+
+  return (
+    <div key={key} className="my-3 w-full overflow-x-auto rounded-xl border border-[#6C47FF]/20 bg-[#080914]/40">
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="bg-[#6C47FF]/12 text-[#D8D0FF]">
+          <tr>
+            {header.map((cell, index) => (
+              <th key={`${key}-head-${index}`} className="border-b border-[#6C47FF]/20 px-3 py-2 font-semibold">
+                {renderInlineSegment(cell, `${key}-head-${index}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {body.map((row, rowIndex) => (
+            <tr key={`${key}-row-${rowIndex}`} className="odd:bg-white/[0.025]">
+              {header.map((_, cellIndex) => (
+                <td key={`${key}-cell-${rowIndex}-${cellIndex}`} className="border-b border-white/5 px-3 py-2 align-top text-foreground/90">
+                  {renderInlineSegment(row[cellIndex] || '', `${key}-cell-${rowIndex}-${cellIndex}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderTextWithTables(text: string, keyPrefix: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const lines = text.split('\n');
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isMarkdownTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && lines[index].trim().startsWith('|') && lines[index].trim().endsWith('|')) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      index -= 1;
+      nodes.push(renderMarkdownTable(tableLines, `${keyPrefix}-table-${index}`));
+      continue;
+    }
+
+    nodes.push(
+      <span key={`${keyPrefix}-line-${index}`}>
+        {renderInlineSegment(lines[index], `${keyPrefix}-line-${index}`)}
+        {index < lines.length - 1 && <br />}
+      </span>
+    );
+  }
+
+  return nodes;
+}
+
 function formatContent(content: string): React.ReactNode[] {
   const parts = content.split(/(```[\s\S]*?```)/g);
   return parts.map((part, i) => {
@@ -118,19 +203,7 @@ function formatContent(content: string): React.ReactNode[] {
         </div>
       );
     }
-    const lines = part.split('\n');
-    return (
-      <span key={`text-${i}`}>
-        {lines.map((line, li) => {
-          return (
-            <span key={`line-${li}`}>
-              {renderInlineSegment(line, `line-${i}-${li}`)}
-              {li < lines.length - 1 && <br />}
-            </span>
-          );
-        })}
-      </span>
-    );
+    return <React.Fragment key={`text-${i}`}>{renderTextWithTables(part, `line-${i}`)}</React.Fragment>;
   });
 }
 

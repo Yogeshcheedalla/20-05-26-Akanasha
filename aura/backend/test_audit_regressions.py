@@ -8,16 +8,29 @@ from backend.ai_engine import (
     _build_direct_live_data_context,
     _build_live_answer_hint,
     _build_multi_question_live_context,
+    _build_output_intent_context,
     _build_live_search_query,
+    _direct_source_backed_answer,
+    _detect_output_formats,
     _detect_emotional_state,
     _detect_user_language_preference,
     _extract_matchups_from_live_context,
+    _fetch_ipl_standings_context,
+    _fetch_news_direct_context,
     _humor_policy,
     _language_instruction,
+    _needs_structured_table,
+    _parse_ipl_standings_rows,
     _preferred_live_source_profile,
     _split_live_questions,
     _needs_live_web_context,
     build_social_intelligence_context,
+)
+from backend.artifact_engine import (
+    artifact_markdown,
+    create_requested_artifacts,
+    requested_artifact_formats,
+    sanitize_model_artifact_placeholders,
 )
 from backend.main import (
     _normalize_whatsapp_allowed_contact,
@@ -259,6 +272,25 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("Indian Telugu speaker", telugu_instruction)
         self.assertIn("do not answer only in English", telugu_instruction)
 
+    def test_voice_recognition_language_buttons_bias_asr_before_english(self):
+        voice_hook = (PROJECT_ROOT / "src/hooks/useVoice.ts").read_text(encoding="utf-8")
+
+        self.assertIn("if (preference === 'hindi') return ['hi-IN', 'en-IN'];", voice_hook)
+        self.assertIn(
+            "if (preference === 'telugu_english') return ['te-IN', 'en-IN', 'hi-IN'];",
+            voice_hook,
+        )
+        self.assertIn("return ['en-IN', 'en-US'];", voice_hook)
+        self.assertNotIn("return ['en-IN', 'te-IN', 'hi-IN'];", voice_hook)
+
+    def test_mixed_voice_recognition_keeps_selected_indian_language_active(self):
+        voice_hook = (PROJECT_ROOT / "src/hooks/useVoice.ts").read_text(encoding="utf-8")
+
+        self.assertIn("languageMode === 'mixed'", voice_hook)
+        self.assertIn("voiceLanguage === 'hindi'", voice_hook)
+        self.assertIn("voiceLanguage === 'telugu_english'", voice_hook)
+        self.assertNotIn("languageMode === 'mixed'\n                  ? 'en-IN'", voice_hook)
+
     def test_frontend_speech_paths_use_one_shared_audio_guard(self):
         guard = (PROJECT_ROOT / "src/lib/audioPlaybackGuard.ts").read_text(encoding="utf-8")
         voice_hook = (PROJECT_ROOT / "src/hooks/useVoice.ts").read_text(encoding="utf-8")
@@ -284,6 +316,33 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("p.y -= jaw * 0.0", avatar_stage)
         self.assertNotIn("p.z += mouth * (", avatar_stage)
         self.assertNotIn("jaw * uSpeech", avatar_stage)
+
+    def test_isolated_3d_interface_uses_phoneme_blendshapes_and_silence_lock(self):
+        avatar_interface = (
+            PROJECT_ROOT / "src/components/assistant/Akansha3DInterface.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("audioStream: MediaStream;", avatar_interface)
+        self.assertIn("currentPhoneme: string;", avatar_interface)
+        self.assertIn("currentEmotion: string;", avatar_interface)
+        self.assertIn("target.jawOpen = 0.15;", avatar_interface)
+        self.assertIn("target.mouthPucker = 0.1;", avatar_interface)
+        self.assertIn("target.jawOpen = 0;", avatar_interface)
+        self.assertIn("target.mouthPucker = 0.25;", avatar_interface)
+        self.assertIn("target.jawOpen = 0.65;", avatar_interface)
+        self.assertIn("target.mouthFunnel = 0.4;", avatar_interface)
+        self.assertIn("target.mouthSmileLeft = 0.15;", avatar_interface)
+        self.assertIn("target.mouthSmileRight = 0.15;", avatar_interface)
+        self.assertIn("AudioContext", avatar_interface)
+        self.assertIn("currentTime", avatar_interface)
+        self.assertIn("TimedPhonemeChunk", avatar_interface)
+        self.assertIn("currentBlendshapesRef.current.jawOpen = 0;", avatar_interface)
+        self.assertIn("currentBlendshapesRef.current.mouthFunnel = 0;", avatar_interface)
+        self.assertIn("currentBlendshapesRef.current.mouthPucker = 0;", avatar_interface)
+        self.assertNotIn("ProceduralSafetyFallback", avatar_interface)
+        self.assertNotIn("<sphereGeometry", avatar_interface)
+        self.assertNotIn("speakingVolume", avatar_interface)
+        self.assertNotIn("getByteFrequencyData", avatar_interface)
 
     def test_media_followup_sets_volume_and_clicks_requested_result(self):
         plan = build_browser_prompt_plan("play third song and play at 60 volume")
@@ -362,6 +421,187 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("match teams", query)
         self.assertRegex(query, r"\b20\d{2}\b")
 
+    def test_ipl_points_table_prompts_force_live_structured_table_answering(self):
+        prompt = "Give me the complete points table 2026 IPL"
+        query = _build_live_search_query(prompt)
+        context = _build_output_intent_context(prompt)
+
+        self.assertTrue(_needs_live_web_context(prompt))
+        self.assertTrue(_needs_structured_table(prompt))
+        self.assertIn("points table", query)
+        self.assertIn("standings", query)
+        self.assertIn("clean Markdown table", context)
+        self.assertIn("Never tell the user to visit a website", context)
+        self.assertIn("Do not use confident words", context)
+        self.assertIn("Confidence score means source coverage only", context)
+
+    def test_ipl_standings_parser_extracts_verified_rows_without_guessing(self):
+        sample = (
+            "1 Royal Challengers Bengaluru 13 9 4 18+1.065 "
+            "2 Gujarat Titans 13 8 5 16+0.400 "
+            "3 Sunrisers Hyderabad 13 8 5 16+0.350"
+        )
+        rows = _parse_ipl_standings_rows(sample)
+
+        self.assertEqual(rows[0]["team"], "Royal Challengers Bengaluru")
+        self.assertEqual(rows[0]["points"], "18")
+        self.assertEqual(rows[0]["nrr"], "+1.065")
+        self.assertEqual(rows[1]["team"], "Gujarat Titans")
+
+    @patch(
+        "backend.ai_engine._read_url",
+        return_value=(
+            "1 Royal Challengers Bengaluru 13 9 4 18+1.065 "
+            "2 Gujarat Titans 13 8 5 16+0.400 "
+            "3 Sunrisers Hyderabad 13 8 5 16+0.350 "
+            "4 Punjab Kings 13 6 6 13+0.227 "
+            "5 Rajasthan Royals 12 6 6 12+0.027 "
+            "6 Chennai Super Kings 13 6 7 12-0.016 "
+            "7 Delhi Capitals 13 6 7 12-0.871 "
+            "8 Kolkata Knight Riders 12 5 6 11-0.038 "
+            "9 Mumbai Indians 12 4 8 8-0.504 "
+            "10 Lucknow Super Giants 12 4 8 8-0.701"
+        ),
+    )
+    def test_ipl_points_table_context_contains_source_verified_table(self, _mock_read):
+        context = _fetch_ipl_standings_context("generate points table ipl 2026")
+
+        self.assertIn("DIRECT LIVE DATA: IPL 2026 points table extracted", context)
+        self.assertIn("| Royal Challengers Bengaluru | 13 | 9 | 4 | 0 | 18 | +1.065 | Verified from source |", context)
+        self.assertIn("Do not invent missing teams", context)
+
+    def test_source_backed_ipl_table_answer_uses_only_parsed_rows(self):
+        live_context = (
+            "DIRECT LIVE DATA: IPL 2026 points table extracted from Test Source (https://example.com/table). "
+            "Fetched at Tuesday, May 19, 2026, 9:08 PM IST. Use exactly these rows.\n"
+            "| Pos | Team | P | W | L | NR | Pts | NRR | Source status |\n"
+            "|---:|---|---:|---:|---:|---:|---:|---:|---|\n"
+            "| 1 | Royal Challengers Bengaluru | 13 | 9 | 4 | 0 | 18 | +1.065 | Verified from source |\n"
+            "| 2 | Gujarat Titans | 13 | 8 | 5 | 0 | 16 | +0.400 | Verified from source |"
+        )
+
+        answer = _direct_source_backed_answer("generate points table ipl 2026", live_context)
+
+        self.assertIn("Royal Challengers Bengaluru", answer)
+        self.assertIn("Gujarat Titans", answer)
+        self.assertIn("I did not add confidence", answer)
+        self.assertNotIn("Mumbai Indians | 10", answer)
+
+    def test_source_backed_news_answer_labels_items_as_source_reported(self):
+        live_context = (
+            "DIRECT LIVE DATA: India current news RSS/news feeds fetched at Tuesday, May 19, 2026, 9:10 PM IST. "
+            "Use these source-attributed headlines.\n"
+            "- The Hindu National: Parliament passes example bill [Tue, 19 May 2026 10:00:00 +0530] - Short summary.\n"
+            "- Indian Express India: State update headline [Tue, 19 May 2026 09:00:00 +0530]"
+        )
+
+        answer = _direct_source_backed_answer("latest India news today", live_context)
+
+        self.assertIn("| Source | Headline | Published | Status |", answer)
+        self.assertIn("Source-reported, not independently confirmed", answer)
+        self.assertNotIn("confidence", answer.lower())
+
+    def test_output_format_detection_for_generated_files(self):
+        prompt = "Generate Excel, PDF, PNG, JPG, CSV, JSON and invoice report for IPL stats"
+
+        self.assertEqual(
+            set(_detect_output_formats(prompt)),
+            {"xlsx", "pdf", "png", "jpg", "csv", "json"},
+        )
+        self.assertEqual(
+            set(requested_artifact_formats(prompt)),
+            {"xlsx", "pdf", "png", "jpg", "csv", "json"},
+        )
+        self.assertIn("pdf", requested_artifact_formats("Create invoice for web design service"))
+        self.assertIn("pdf", requested_artifact_formats("Make formula sheet notes for Java"))
+        self.assertIn("pptx", requested_artifact_formats("Generate 10 PowerPoints about Java"))
+        self.assertIn("jpg", requested_artifact_formats("Create a jpc image for the workflow"))
+        self.assertEqual(
+            set(requested_artifact_formats("Generate all file formats for this report")),
+            {"pdf", "docx", "pptx", "xlsx", "csv", "json", "png", "jpg", "md", "zip"},
+        )
+
+    def test_sandbox_download_links_are_removed_before_real_artifacts(self):
+        cleaned = sanitize_model_artifact_placeholders(
+            "I made it: [Download PDF](sandbox:/fake.pdf)\n\nGenerated summary stays here."
+        )
+
+        self.assertNotIn("sandbox:", cleaned)
+        self.assertNotIn("Download PDF", cleaned)
+        self.assertIn("Generated summary stays here.", cleaned)
+
+    def test_openrouter_auto_model_is_configurable(self):
+        ai_engine = (PROJECT_ROOT / "backend/ai_engine.py").read_text(encoding="utf-8")
+        env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+
+        self.assertIn('OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")', ai_engine)
+        self.assertIn("model=OPENROUTER_MODEL", ai_engine)
+        self.assertNotIn('model="openai/gpt-4o-mini"', ai_engine)
+        self.assertIn("OPENROUTER_MODEL=openrouter/auto", env_example)
+
+    def test_java_pdf_prompt_generates_requested_pages_and_complete_code(self):
+        prompt = (
+            "generate pdf containing code of java all top questions required for tcs placements "
+            "10 pages atleast along with complete code in Java, along with comments for each question, "
+            "give at least 30 coding questions"
+        )
+        artifacts = create_requested_artifacts(prompt, "Short outline only.")
+        pdf_artifact = next(artifact for artifact in artifacts if artifact["format"] == "pdf")
+        pdf_path = PROJECT_ROOT / "generated_artifacts" / pdf_artifact["name"]
+
+        self.assertTrue(pdf_path.exists())
+        if fitz := __import__("fitz"):
+            document = fitz.open(pdf_path)
+            text = "\n".join(page.get_text() for page in document)
+            self.assertGreaterEqual(document.page_count, 10)
+            document.close()
+            self.assertIn("Question 30", text)
+            self.assertIn("Complete Java code with comments", text)
+            self.assertIn("public class Solution", text)
+
+    def test_document_generation_prompt_is_not_treated_as_browser_automation(self):
+        automation_commands = (PROJECT_ROOT / "src/lib/automationCommands.ts").read_text(encoding="utf-8")
+
+        self.assertIn("ARTIFACT_GENERATION_PATTERNS", automation_commands)
+        self.assertIn("return false", automation_commands)
+        self.assertIn("pdf|pptx?", automation_commands)
+
+    def test_artifact_engine_creates_downloadable_structured_outputs(self):
+        response = (
+            "| Team | Pts | Status |\n"
+            "|---|---:|---|\n"
+            "| Punjab Kings | 17 | Verified |\n"
+            "| Mumbai Indians | 16 | Verified |\n"
+        )
+
+        artifacts = create_requested_artifacts("Generate Excel and CSV of IPL stats", response)
+        formats = {artifact["format"] for artifact in artifacts}
+        markdown = artifact_markdown(artifacts)
+
+        self.assertEqual(formats, {"xlsx", "csv"})
+        self.assertIn("| Format | Download |", markdown)
+        for artifact in artifacts:
+            self.assertTrue((PROJECT_ROOT / "generated_artifacts" / artifact["name"]).exists())
+
+    def test_chat_message_renderer_supports_markdown_tables_and_modifier_links(self):
+        message_bubble = (
+            PROJECT_ROOT / "src/app/chat-interface/components/MessageBubble.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function renderMarkdownTable", message_bubble)
+        self.assertIn("isMarkdownTableStart", message_bubble)
+        self.assertIn("/generated", message_bubble)
+        self.assertIn("window.open(url, '_blank'", message_bubble)
+
+    def test_frontend_generated_route_serves_backend_artifacts(self):
+        route = (PROJECT_ROOT / "src/app/generated/[...path]/route.ts").read_text(encoding="utf-8")
+
+        self.assertIn("generated_artifacts", route)
+        self.assertIn("application/pdf", route)
+        self.assertIn("application/vnd.openxmlformats-officedocument.presentationml.presentation", route)
+        self.assertIn("path.relative", route)
+        self.assertIn("Generated file not found", route)
+
     def test_yesterday_ipl_search_query_uses_requested_temporal_word(self):
         query = _build_live_search_query("yesterday IPL match teams and highest score")
 
@@ -420,6 +660,22 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("site:thehindu.com", query)
         self.assertIn("site:indianexpress.com", query)
         self.assertIn("India latest news today", query)
+
+    @patch(
+        "backend.ai_engine._read_url",
+        return_value=(
+            "<?xml version='1.0'?><rss><channel><item>"
+            "<title>Verified headline from source</title><link>https://example.com/one</link>"
+            "<pubDate>Tue, 19 May 2026 16:30:00 +0530</pubDate>"
+            "<description>Source-reported description.</description></item></channel></rss>"
+        ),
+    )
+    def test_news_context_forbids_extra_confident_claims(self, _mock_read):
+        context = _fetch_news_direct_context("latest India news today")
+
+        self.assertIn("source-attributed headlines", context)
+        self.assertIn("Do not create extra news claims", context)
+        self.assertIn("Source-reported", context)
 
     @patch("backend.ai_engine._read_url")
     def test_direct_news_context_uses_rss_before_generic_search(self, mock_read):

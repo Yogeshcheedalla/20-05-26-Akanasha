@@ -47,6 +47,7 @@ playwright-report/
 .playwright/
 
 # Temporary generated artifacts
+generated_artifacts/
 tmp_*/
 tmp_voice_recording_frames/
 codechef-login.html

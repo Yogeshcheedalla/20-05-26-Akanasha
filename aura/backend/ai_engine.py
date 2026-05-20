@@ -14,6 +14,8 @@ from .database import Memory, ChatMessage, Task
 
 load_dotenv(override=True)
 
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto").strip() or "openrouter/auto"
+
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY"),
@@ -47,6 +49,7 @@ Personality:
 - Current date/time must be interpreted in Indian Standard Time (IST, Asia/Kolkata) whenever the user says today, yesterday, tomorrow, present, now, or current.
 - If the user asks multiple questions in one message, answer every sub-question directly in the same order.
 - For current facts, do not answer from old model memory if LIVE WEB CONTEXT is present. Use the provided live context first and say only what is verified.
+- Do not present confidence for live/news/sports/current facts unless the value is source-backed in DIRECT LIVE DATA or LIVE WEB CONTEXT. If a fact is not verified, say "Not verified" instead of sounding confident.
 """
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
@@ -115,7 +118,8 @@ def _needs_live_web_context(user_input: str) -> bool:
         re.search(
             r"\b(latest|current|present|today|yesterday|tomorrow|now|right now|real[- ]?time|news|updates?|"
             r"recent|price|weather|score|won|winner|highest|top|match|fixture|schedule|standing|rank|ranking|height|"
-            r"president|prime minister|chief minister|ceo|stock|crypto|release date|version|model|trend|trending)\b",
+            r"points table|table|stats|statistics|president|prime minister|chief minister|ceo|stock|crypto|release date|"
+            r"version|model|trend|trending)\b",
             lowered,
         )
         or re.search(r"\b(search|look up|google|internet|web)\b", lowered)
@@ -670,8 +674,8 @@ def _build_live_search_query(user_input: str, now: datetime | None = None) -> st
         r"\b(latest|current|present|today|now|version|model)\b", lowered
     ):
         return f"site:openai.com OpenAI latest GPT model {date_text} official"
-    if "ipl" in lowered and re.search(r"\b(today|yesterday|tomorrow|now|current|present|match|teams?|playing|schedule|score|highest|batting|batter|batters|crease|pitch|bowling|bowler)\b", lowered):
-        return f"site:iplt20.com OR site:espncricinfo.com OR site:cricbuzz.com {user_input} IPL {date_text} match teams score live score striker non striker bowler scorecard highest scorer"
+    if "ipl" in lowered and re.search(r"\b(today|yesterday|tomorrow|now|current|present|match|teams?|playing|schedule|score|highest|batting|batter|batters|crease|pitch|bowling|bowler|points table|standings?|stats|statistics)\b", lowered):
+        return f"site:iplt20.com OR site:espncricinfo.com OR site:cricbuzz.com {user_input} IPL {date_text} points table standings match teams score live score striker non striker bowler scorecard highest scorer"
     if source_profile["query"]:
         return f"{source_profile['query']} {user_input} {date_text}"
     if re.search(r"\b(today|yesterday|tomorrow|now|current|present|latest|recent|score|price|weather|version|model|news)\b", lowered):
@@ -914,7 +918,8 @@ def _fetch_news_direct_context(user_input: str) -> str:
         return ""
     return (
         f"DIRECT LIVE DATA: {category} RSS/news feeds fetched at {_format_ist_datetime()}. "
-        "Use these source-attributed headlines before generic search results.\n"
+        "Use these source-attributed headlines before generic search results. Do not create extra news claims that are not present in these items. "
+        "For news answers, preserve the source/date and label each item as Source-reported, not independently confirmed.\n"
         + "\n".join(f"- {item}" for item in items[:6])
     )
 
@@ -990,6 +995,9 @@ def _fetch_ipl_direct_context(user_input: str) -> str:
     lowered = user_input.lower()
     if "ipl" not in lowered:
         return ""
+    standings_context = _fetch_ipl_standings_context(user_input)
+    if standings_context:
+        return standings_context
     target_date = _resolve_temporal_date(user_input).strftime("%Y-%m-%d")
     try:
         payload = _read_url("https://scores.iplt20.com/ipl/feeds/284-matchschedule.js")
@@ -1063,6 +1071,125 @@ def _fetch_ipl_direct_context(user_input: str) -> str:
                 line += f" Highest individual score: {top_batter[0]} {top_batter[1]} off {top_batter[2]} balls."
         lines.append(line)
     return "\n".join(lines)
+
+
+IPL_STANDINGS_TEAM_NAMES = [
+    "Royal Challengers Bengaluru",
+    "Gujarat Titans",
+    "Sunrisers Hyderabad",
+    "Punjab Kings",
+    "Rajasthan Royals",
+    "Chennai Super Kings",
+    "Delhi Capitals",
+    "Kolkata Knight Riders",
+    "Mumbai Indians",
+    "Lucknow Super Giants",
+]
+
+
+def _canonical_ipl_team_name(raw_team: str) -> str:
+    compact = re.sub(r"\s+", " ", raw_team).strip().casefold()
+    for team in IPL_STANDINGS_TEAM_NAMES:
+        if team.casefold() == compact:
+            return team
+    return re.sub(r"\s+", " ", raw_team).strip().title()
+
+
+def _wants_ipl_standings(user_input: str) -> bool:
+    return bool(re.search(r"\b(points table|standings?|rankings?|table)\b", user_input.lower()))
+
+
+def _parse_ipl_standings_rows(page_text: str) -> list[dict[str, str]]:
+    normalized = re.sub(r"\s+", " ", _strip_html(page_text))
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    team_pattern = "|".join(re.escape(team) for team in IPL_STANDINGS_TEAM_NAMES)
+    pattern = re.compile(
+        rf"(?<!\d)(?P<position>\d{{1,2}})\s+(?P<team>{team_pattern})(?:\s+IPL\s+2026\s+Squad)?\s+"
+        rf"(?P<numbers>(?:\d{{1,2}}\s*){{3,5}})(?P<nrr>[+-]?\d+\.\d{{3}})",
+        flags=re.IGNORECASE,
+    )
+
+    for match in pattern.finditer(normalized):
+        team = _canonical_ipl_team_name(match.group("team"))
+        if team in seen:
+            continue
+        numbers = re.findall(r"\d{1,2}", match.group("numbers"))
+        if len(numbers) < 3:
+            continue
+        played, wins, losses = numbers[0], numbers[1], numbers[2]
+        no_result = "0"
+        points = numbers[-1]
+        if len(numbers) >= 5:
+            no_result = numbers[3]
+            points = numbers[4]
+        rows.append(
+            {
+                "position": match.group("position"),
+                "team": team,
+                "played": played,
+                "wins": wins,
+                "losses": losses,
+                "no_result": no_result,
+                "points": points,
+                "nrr": match.group("nrr"),
+            }
+        )
+        seen.add(team)
+        if len(rows) == 10:
+            break
+
+    return rows
+
+
+def _fetch_ipl_standings_context(user_input: str) -> str:
+    if not _wants_ipl_standings(user_input):
+        return ""
+
+    sources = [
+        (
+            "Times Now Navbharat IPL points table",
+            "https://www.timesnowhindi.com/sports/cricket/ipl-points-table",
+        ),
+        (
+            "Indian Express IPL points table",
+            "https://indianexpress.com/section/sports/ipl/points-table/",
+        ),
+        (
+            "Rediff IPL 2026 points table",
+            "https://www.rediff.com/cricket/ipl-t20-2026/points-table/",
+        ),
+    ]
+
+    for source_name, source_url in sources:
+        try:
+            page = _read_url(source_url, timeout=7)
+        except Exception:
+            continue
+        rows = _parse_ipl_standings_rows(page)
+        if len(rows) < 8:
+            continue
+        table = [
+            "| Pos | Team | P | W | L | NR | Pts | NRR | Source status |",
+            "|---:|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+        for row in rows:
+            table.append(
+                "| {position} | {team} | {played} | {wins} | {losses} | {no_result} | {points} | {nrr} | Verified from source |".format(
+                    **row
+                )
+            )
+        return (
+            f"DIRECT LIVE DATA: IPL 2026 points table extracted from {source_name} ({source_url}). "
+            f"Fetched at {_format_ist_datetime()}. Use exactly these rows for IPL standings/points-table answers. "
+            "Do not invent missing teams, wins, points, or NRR. If asked for confidence, say confidence applies only to rows marked verified from source.\n"
+            + "\n".join(table)
+        )
+
+    return (
+        f"DIRECT LIVE DATA: IPL points table was requested, but no trusted standings table could be parsed at {_format_ist_datetime()}. "
+        "Do not create a points table from memory. Say the current standings are not verified and ask to retry or use an attached source."
+    )
 
 
 def _build_direct_live_data_context(user_input: str) -> str:
@@ -1404,6 +1531,137 @@ def _build_live_answer_hint(user_input: str, live_context: str) -> str:
     return ""
 
 
+def _extract_fetched_at(live_context: str) -> str:
+    match = re.search(r"Fetched at ([^.]+(?:IST)?)", live_context)
+    return match.group(1).strip() if match else _format_ist_datetime()
+
+
+def _direct_source_backed_answer(user_input: str, live_context: str) -> str:
+    """Return deterministic answers for high-risk live facts when parsed source data exists.
+
+    This prevents the chat model from beautifying partial source data into confident,
+    fabricated live/news/sports rows. When a deterministic answer is returned, it is
+    intentionally limited to facts present in DIRECT LIVE DATA.
+    """
+    lowered = user_input.lower()
+
+    if "IPL 2026 points table extracted" in live_context:
+        table_lines = [
+            line.strip()
+            for line in live_context.splitlines()
+            if line.strip().startswith("|") and line.strip().endswith("|")
+        ]
+        source_match = re.search(r"extracted from ([^(]+)\((https?://[^)]+)\)", live_context)
+        source_name = source_match.group(1).strip() if source_match else "parsed IPL standings source"
+        source_url = source_match.group(2).strip() if source_match else ""
+        source_text = f"[{source_name}]({source_url})" if source_url else source_name
+        return (
+            f"Source-backed IPL 2026 points table, fetched at {_extract_fetched_at(live_context)}.\n\n"
+            + "\n".join(table_lines)
+            + f"\n\nSource: {source_text}. Status: rows are source-backed only; I did not add confidence or fill missing values from memory."
+        )
+
+    if "IPL points table was requested, but no trusted standings table could be parsed" in live_context:
+        return (
+            "I could not verify the current IPL points table from a trusted parseable source right now. "
+            "I will not generate a confident table from memory because that can be wrong. Please retry once, or paste/upload the standings source and I will format it."
+        )
+
+    if re.search(r"\b(news|headlines|breaking|latest|updates?|happened|today)\b", lowered) and "RSS/news feeds fetched" in live_context:
+        item_lines = [line.strip()[2:] for line in live_context.splitlines() if line.strip().startswith("- ")]
+        if not item_lines:
+            return ""
+        table = [
+            "| # | Source | Headline | Published | Status |",
+            "|---:|---|---|---|---|",
+        ]
+        for index, item in enumerate(item_lines[:8], start=1):
+            source = "Source feed"
+            headline = item
+            published = "Not provided"
+            if ": " in item:
+                source, headline = item.split(": ", 1)
+            date_match = re.search(r"\[([^\]]+)\]", headline)
+            if date_match:
+                published = date_match.group(1)
+                headline = re.sub(r"\s*\[[^\]]+\]", "", headline).strip()
+            headline = re.sub(r"\s+-\s+.*$", "", headline).strip()
+            table.append(
+                f"| {index} | {source} | {headline} | {published} | Source-reported, not independently confirmed |"
+            )
+        return (
+            f"Verified news feed items fetched at {_extract_fetched_at(live_context)}. "
+            "I am only listing source-reported items and not adding extra confident claims.\n\n"
+            + "\n".join(table)
+        )
+
+    return ""
+
+
+def _detect_output_formats(user_input: str) -> list[str]:
+    lowered = user_input.lower()
+    formats: list[str] = []
+    checks = [
+        ("xlsx", r"\b(excel|xlsx|spreadsheets?|workbooks?)\b"),
+        ("pdf", r"\b(pdfs?|reports?|invoices?|receipts?|certificates?|resume|resumes|notes?|formula sheets?|study plans?)\b"),
+        ("docx", r"\b(word|docx|documents?)\b"),
+        ("pptx", r"\b(powerpoint|ppt|pptx|presentation|slides?)\b"),
+        ("csv", r"\b(csvs?|csv files?)\b"),
+        ("json", r"\b(json)\b"),
+        ("png", r"\b(pngs?|images?|diagrams?|photos?|pictures?|charts?)\b"),
+        ("jpg", r"\b(jpgs?|jpegs?)\b"),
+        ("markdown", r"\b(markdown|md)\b"),
+        ("zip", r"\b(zips?|archives?)\b"),
+    ]
+    for name, pattern in checks:
+        if re.search(pattern, lowered):
+            formats.append(name)
+    return formats
+
+
+def _needs_structured_table(user_input: str) -> bool:
+    lowered = user_input.lower()
+    return bool(
+        re.search(
+            r"\b(table|points table|standings?|stats|statistics|compare|comparison|ranking|rank|"
+            r"schedule|fixtures?|scorecard|list|summarize|summary|compress)\b",
+            lowered,
+        )
+    )
+
+
+def _build_output_intent_context(user_input: str) -> str:
+    requested_formats = _detect_output_formats(user_input)
+    table_needed = _needs_structured_table(user_input)
+    if not requested_formats and not table_needed:
+        return (
+            "OUTPUT INTELLIGENCE: Choose the most useful format automatically. Use Markdown tables for comparisons, "
+            "standings, stats, schedules, live data, prices, news, and multi-item summaries. For live/current claims, "
+            "separate source-reported facts from unverified details."
+        )
+
+    lines = [
+        "OUTPUT INTELLIGENCE CONTRACT:",
+        "- Infer the user's desired output format from the prompt and answer in that format immediately.",
+        "- If a table is useful or requested, produce a clean Markdown table with concise column names.",
+        "- Do not refuse table/file-style requests just because every field is not verified; include a Source/Status column and mark missing live fields as Not verified.",
+        "- For live/current data, use DIRECT LIVE DATA or LIVE WEB CONTEXT first, include source names and fetched timestamp/date.",
+        "- Never tell the user to visit a website instead of answering; answer with verified facts and uncertainty labels.",
+        "- Do not use confident words like current/latest/confirmed unless the value is in DIRECT LIVE DATA or a cited live source. If not verified, label it Not verified instead of guessing.",
+        "- Confidence score means source coverage only: High = exact parsed source rows, Medium = source snippet/headline only, Low = partial or conflicting sources. Never use confidence to make an unverified fact sound true.",
+        "- For news, summarize only source-reported items that appear in the live context. Do not add background claims, names, scores, dates, or conclusions that are not present in the source lines.",
+    ]
+    if table_needed:
+        lines.append("- The user needs structured information: prioritize a table before explanatory paragraphs.")
+    if requested_formats:
+        lines.append(
+        "- The user requested downloadable/exportable formats: "
+        + ", ".join(requested_formats)
+        + ". The backend artifact engine will create the real downloadable files from the final answer, so keep the content structured and never invent sandbox:/ download links."
+        )
+    return "\n".join(lines)
+
+
 def _build_attachment_message_content(user_input: str, attachments: list[dict]) -> list[dict]:
     content: list[dict] = [
         {
@@ -1488,27 +1746,38 @@ def generate_chat_stream(
         f"LANGUAGE PREFERENCE: {effective_language_preference}",
         "Speak naturally, with short spoken-language sentences when the conversation mode involves voice. Use a brief acknowledgement/filler only when it sounds human, then answer directly.",
         _language_instruction(effective_language_preference, language_preference),
+        _build_output_intent_context(user_input),
         f"CURRENT TIME CONTEXT: {_format_ist_datetime()}. Use IST for today, yesterday, tomorrow, now, present, and current.",
         (
             "CURRENT FACT ACCURACY CONTRACT: For any current/live/recent question in any domain, use DIRECT LIVE DATA "
             "or LIVE WEB CONTEXT as the source of truth. Answer all requested fields directly, include source name and "
-            "timestamp/date/unit when available, and do not invent missing details. If the exact detail is not verified "
-            "by the live context, say that exact detail is not verified yet and give the closest verified facts. "
+            "timestamp/date/unit when available, and do not invent missing details. Never present guessed or memory-based "
+            "live facts confidently. If the exact detail is not verified by the live context, say that exact detail is "
+            "not verified yet and give the closest verified facts. Do not say 'current', 'latest', 'confirmed', or "
+            "'here is the table' unless the rows/values are present in DIRECT LIVE DATA or a cited live source. "
+            "For news and articles, every headline/claim must be traceable to a source line in DIRECT LIVE DATA or LIVE WEB CONTEXT; "
+            "if the source is only an RSS/search snippet, call it 'source-reported' rather than fully confirmed. "
             "When the user says re-check/wrong, do a fresh live lookup and do not defend the previous answer from memory."
         ),
     ]
+    source_backed_answer = ""
     if _needs_live_web_context(user_input):
         live_context = _build_multi_question_live_context(user_input)
         dynamic_context.append(live_context)
         live_answer_hint = _build_live_answer_hint(user_input, live_context)
         if live_answer_hint:
             dynamic_context.append(live_answer_hint)
+        source_backed_answer = _direct_source_backed_answer(user_input, live_context)
 
     if attachments:
         dynamic_context.append(
             "ATTACHMENT VISION MODE: The user attached screenshots/images/files. Inspect images carefully: visible text, UI controls, layout, colors, warnings, tiny labels, and any likely user intent. "
             "Answer from the attachment content first, then reason about the next useful action. If a detail is not visible, say it is not visible instead of guessing."
         )
+
+    if source_backed_answer and not attachments:
+        yield source_backed_answer
+        return
 
     messages = [
         {
@@ -1528,7 +1797,7 @@ def generate_chat_stream(
         f.write(json.dumps(messages, indent=2))
 
     response = client.chat.completions.create(
-        model="openai/gpt-4o-mini",
+        model=OPENROUTER_MODEL,
         messages=messages,
         temperature=0.7,
         max_tokens=1200,
@@ -1575,7 +1844,7 @@ def analyze_intent_and_memory(db: Session, user_input: str, assistant_response: 
     """
     try:
         res = client.chat.completions.create(
-            model="openai/gpt-4o-mini",
+            model=OPENROUTER_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )

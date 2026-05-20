@@ -49,6 +49,13 @@ from .database import (
     SpeakerInteraction,
 )
 from .ai_engine import generate_chat_stream, analyze_intent_and_memory
+from .artifact_engine import (
+    GENERATED_ARTIFACTS_DIR,
+    artifact_markdown,
+    create_requested_artifacts,
+    requested_artifact_formats,
+    sanitize_model_artifact_placeholders,
+)
 from .automation import execute_desktop_command
 
 app = FastAPI(title="Akansha AI Engine")
@@ -127,6 +134,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+app.mount(
+    "/generated",
+    StaticFiles(directory=str(GENERATED_ARTIFACTS_DIR)),
+    name="generated_artifacts",
 )
 
 class ChatRequest(BaseModel):
@@ -3541,6 +3554,9 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks, db:
             speaker_profile=speaker_context,
         )
         response_text = "".join(list(response_generator))
+        response_text = sanitize_model_artifact_placeholders(response_text)
+        artifacts = create_requested_artifacts(req.message, response_text)
+        response_text += artifact_markdown(artifacts)
         
         # Save Assistant Message
         ai_msg = ChatMessage(
@@ -3642,6 +3658,7 @@ async def chat_stream_endpoint(
 
     async def event_stream():
         response_text = ""
+        buffer_file_response = bool(requested_artifact_formats(req.message))
         try:
             for chunk in generate_chat_stream(
                 db,
@@ -3655,7 +3672,17 @@ async def chat_stream_endpoint(
                 speaker_profile=speaker_context,
             ):
                 response_text += chunk
-                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+                if not buffer_file_response:
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+
+            response_text = sanitize_model_artifact_placeholders(response_text)
+            if buffer_file_response and response_text:
+                yield f"data: {json.dumps({'type': 'chunk', 'content': response_text})}\n\n"
+            artifacts = create_requested_artifacts(req.message, response_text)
+            artifact_block = artifact_markdown(artifacts)
+            if artifact_block:
+                response_text += artifact_block
+                yield f"data: {json.dumps({'type': 'chunk', 'content': artifact_block})}\n\n"
 
             ai_msg = ChatMessage(
                 role="assistant",

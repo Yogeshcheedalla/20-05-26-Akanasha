@@ -106,6 +106,12 @@ const AUTOMATION_TARGET_PATTERNS = [
   /\bscreen\b/i,
 ];
 
+const ARTIFACT_GENERATION_PATTERNS = [
+  /\b(generate|create|make|export|build|prepare)\b.*\b(pdf|pptx?|powerpoints?|presentations?|slides?|excel|xlsx|spreadsheet|csv|json|docx|word document|document|png|jpe?g|jpc|image|zip|all formats|all file formats|all types of files?)\b/i,
+  /\b(pdf|pptx?|powerpoints?|presentations?|slides?|excel|xlsx|spreadsheet|csv|json|docx|word document|document|png|jpe?g|jpc|image|zip|all formats|all file formats|all types of files?)\b.*\b(generate|create|make|export|build|prepare)\b/i,
+  /\b(study plan|formula sheet|notes|quiz|flashcards?|invoice|report)\b.*\b(pdf|docx|pptx?|excel|xlsx|csv|json|zip)\b/i,
+];
+
 export function normalizeAutomationPrompt(text: string) {
   const normalized = text
     .replace(/\bdsktop\b/gi, 'desktop')
@@ -175,6 +181,9 @@ export function normalizeAutomationPrompt(text: string) {
 
 export function isAutomationIntent(text: string) {
   const normalized = normalizeAutomationPrompt(text);
+  if (ARTIFACT_GENERATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
   const hasTrigger = AUTOMATION_TRIGGER_PATTERNS.some((pattern) => pattern.test(normalized));
   const hasTarget = AUTOMATION_TARGET_PATTERNS.some((pattern) => pattern.test(normalized));
   return hasTrigger && hasTarget;

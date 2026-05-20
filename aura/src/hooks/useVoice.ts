@@ -259,8 +259,8 @@ const TELUGU_ROMAN_HINTS = new Set([
 
 function recognitionLanguagesFor(preference: VoiceLanguagePreference) {
   if (preference === 'hindi') return ['hi-IN', 'en-IN'];
-  if (preference === 'telugu_english') return ['en-IN', 'te-IN', 'hi-IN'];
-  return ['en-IN', 'en-US', 'hi-IN', 'te-IN'];
+  if (preference === 'telugu_english') return ['te-IN', 'en-IN', 'hi-IN'];
+  return ['en-IN', 'en-US'];
 }
 
 function preferredRecognitionLanguage(preference: VoiceLanguagePreference, index = 0) {
@@ -713,7 +713,11 @@ export function useVoice() {
               : languageMode === 'telugu'
                 ? 'te-IN'
                 : languageMode === 'mixed'
-                  ? 'en-IN'
+                  ? voiceLanguage === 'hindi'
+                    ? 'hi-IN'
+                    : voiceLanguage === 'telugu_english'
+                      ? 'te-IN'
+                      : 'en-IN'
                   : preferredRecognitionLanguage(voiceLanguage, recognitionLanguageIndexRef.current);
           if (recognition.lang !== nextLanguage) {
             recognition.lang = nextLanguage;

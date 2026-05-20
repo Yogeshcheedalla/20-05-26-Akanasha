@@ -345,6 +345,7 @@ Create a `.env` file in the project root.
 
 ```env
 OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_MODEL=openrouter/auto
 
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
@@ -375,5 +376,4 @@ The regression suite covers important behavior such as live information routing,
 - Sensitive actions should require confirmation.
 - Voice recognition quality depends on browser support, microphone permission, language selection, and background noise.
 
----
-*Built with ❤️ by the Akansha team.*
+
